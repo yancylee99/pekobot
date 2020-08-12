@@ -4,14 +4,18 @@ import logging
 import os
 import shelve
 import sqlite3
+from enum import IntEnum
+from typing import Tuple, Type, TypeVar
 
 import discord
 from discord.ext import commands
 
 from pekobot.bot import Pekobot
-from pekobot.utils import db
+from pekobot.utils import db, files
 
 logger = logging.getLogger(__name__)
+
+BOSS_DATA_FILE_PATH = os.path.join("data", "boss_data.yaml")
 
 META_FILE_PATH = "clanbattles-meta.db"
 
@@ -66,6 +70,46 @@ DELETE FROM {CLAN_BATTLE_TABLE}
 WHERE date='%s';
 """
 
+CLAN_BATTLE_RUN_TABLE = "clan_battle_run"
+CREATE_CLAN_BATTLE_RUN_TABLE = f"""
+CREATE TABLE IF NOT EXISTS {CLAN_BATTLE_RUN_TABLE} (
+    id INTEGER AUTOINCREMENT PRIMARY KEY,
+    battle_date TEXT NOT NULL,
+    member_id INTEGER NOT NULL,
+    round INTEGER NOT NULL,
+    boss INTEGER NOT NULL,
+    damage INTEGER NOT NULL,
+    timestamp DATETIME NOT NULL,
+    type INTEGER NOT NULL,
+    FOREIGN KEY (battle_date) REFERENCES {CLAN_BATTLE_TABLE}(date),
+    FOREIGN KEY (member_id) REFERENCES {CLAN_MEMBER_TABLE}(member_id)
+)
+"""
+
+RunType = TypeVar('RunType', bound='Run')
+
+
+class Run(IntEnum):
+    """Enum that represents a run."""
+    FULL = 0
+    LAST = 1
+    LEFTOVER = 2
+    LOST = 3
+    UNKNOWN = 4
+
+    @classmethod
+    def get_type(cls: Type[RunType], run: str) -> RunType:
+        """Gets the corresponding run type for a give string."""
+        if run == "full":
+            return cls.FULL
+        if run == "last":
+            return cls.LAST
+        if run == "leftover":
+            return cls.LEFTOVER
+        if run == "lost":
+            return cls.LOST
+        return cls.UNKNOWN
+
 
 class ClanBattles(commands.Cog, name="公会战插件"):
     """The clan battles cog.
@@ -74,11 +118,13 @@ class ClanBattles(commands.Cog, name="公会战插件"):
         bot: A Pekobot instance.
         connections: A dict that holds DB connections.
         meta: A file that stores metadata.
+        config: A dict that holds the boss data.
     """
     def __init__(self, bot: Pekobot):
         self.bot = bot
         self.connections = dict()
         self.meta = shelve.open(META_FILE_PATH, writeback=True)
+        self.config = files.load_yaml_file(BOSS_DATA_FILE_PATH)
 
     @commands.command(name="create-clan", aliases=("建会", ))
     @commands.guild_only()
@@ -199,6 +245,7 @@ class ClanBattles(commands.Cog, name="公会战插件"):
         cursor = conn.cursor()
 
         cursor.execute(CREATE_CLAN_BATTLE_TABLE)
+        cursor.execute(CREATE_CLAN_BATTLE_RUN_TABLE)
 
         if self._clan_battle_exists(conn, date):
             logger.warning("Clan battle %s already exists.", date)
@@ -334,6 +381,39 @@ class ClanBattles(commands.Cog, name="公会战插件"):
             logger.info("The current clan battle has been set to %s.", date)
             await ctx.send(f"正在进行中的会战已设置为：{date}")
 
+    @commands.command(name="report-run", aliases=("出刀", ))
+    @commands.guild_only()
+    async def report_run(self, ctx: commands.Context, *args):
+        """会战出刀。"""
+
+        logger.info("%s (%s) is reporting a run.", ctx.author, ctx.guild)
+
+        guild_id = ctx.guild.id
+        conn = self._get_db_connection(guild_id)
+        # cursor = conn.cursor()
+
+        if not self._member_exists(conn, ctx.author.id):
+            await ctx.send("你还不是公会成员，无法出刀")
+        if not args:
+            logger.warning("%s (%s) does not provide the details of the run.",
+                           ctx.author, ctx.guild)
+            await ctx.send("这是啥刀啊？？？")
+            return
+
+        # Damage only
+        if len(args) == 1:
+            damage = args[0]
+            if not self._check_damage(damage):
+                logger.error("Invalid damage value: %s.", damage)
+                await ctx.send("非法伤害数值")
+
+            damage = int(damage)
+            _, _, hp = self._get_current_battle_mata(guild_id)
+            if damage > hp:
+                logger.warning("Overkill (damage: %d, remaining hp: %d).",
+                               damage, hp)
+                await ctx.send("伤害数值有误，切勿过度击杀!")
+
     @commands.command(name="export-data", aliases=("导出数据", ))
     @commands.guild_only()
     @commands.has_permissions(administrator=True)
@@ -445,6 +525,68 @@ class ClanBattles(commands.Cog, name="公会战插件"):
             await ctx.send("请输入合法日期（YYYY-MM-DD）")
             return False
         return True
+
+    @staticmethod
+    def _check_damage(damage: str) -> bool:
+        """Validates a damage value.
+
+        Args:
+            damage: A damage value.
+
+        Returns:
+            A bool that indicates if the damage value is valid.
+        """
+
+        if not damage.isdigit() or int(damage) < 0:
+            return False
+        return True
+
+    def _get_current_battle_mata(self, guild_id: int) -> Tuple[int, int, int]:
+        """Gets the current round for a given guild.
+
+        Args:
+            guild_id: ID of a guild.
+
+        Returns:
+            A tuple that contains the current round, boss and remaining hp.
+        """
+
+        guild_id = str(guild_id)
+        try:
+            round_ = self.meta[guild_id]["current_round"]
+            boss = self.meta[guild_id]["current_boss"]
+            hp = self.meta[guild_id]["remaining_hp"]
+            return round_, boss, hp
+        except KeyError:
+            round_ = 1
+            boss = 1
+            tier = self._get_tier(round_)
+            hp = self.config["pcr_jp"]["boss_hp"][f"{tier}{round_}"]
+            self.meta[guild_id] = {
+                "current_round": round_,
+                "current_boss": boss,
+                "remaining_hp": hp
+            }
+            return round_, boss, hp
+
+    @staticmethod
+    def _get_tier(round_: int) -> str:
+        """Gets the tier for a given round.
+
+        Args:
+            round_: A round number.
+
+        Returns:
+            A tier label.
+        """
+
+        if round_ <= 3:
+            return "a"
+        if round_ <= 10:
+            return "b"
+        if round_ <= 34:
+            return "c"
+        return "d"
 
 
 def setup(bot):
