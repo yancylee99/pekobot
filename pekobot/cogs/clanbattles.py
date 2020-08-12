@@ -5,7 +5,7 @@ import os
 import shelve
 import sqlite3
 from enum import Enum, IntEnum
-from typing import Tuple, Type, TypeVar
+from typing import Optional, Tuple, Type, TypeVar
 
 import discord
 from discord.ext import commands
@@ -301,19 +301,18 @@ class ClanBattles(commands.Cog, name="公会战插件"):
 
         logger.info("%s (%s) is requesting the current clan battle.",
                     ctx.author, ctx.guild)
-        guild_id = str(ctx.guild.id)
-        try:
-            date = self.meta[guild_id]["current_battle_date"]
-            name = self.meta[guild_id]["current_battle_name"]
+        data = self._get_current_clan_battle(ctx.guild.id)
+        if not data:
+            logger.warning("Current clan battle does not exists.")
+            await ctx.send("目前无进行中的公会战")
+        else:
+            date, name = data
             if name:
                 logger.info("Current clan battle: %s (%s).", date, name)
                 await ctx.send(f"当前公会战：{date} ({name})")
             else:
                 logger.info("Current clan battle: %s.", date)
                 await ctx.send(f"当前公会战：{date}")
-        except KeyError:
-            logger.warning("Current clan battle does not exists.")
-            await ctx.send("目前无进行中的公会战")
 
     @commands.command(name="list-clan-battles", aliases=("查看会战", ))
     @commands.guild_only()
@@ -566,6 +565,25 @@ class ClanBattles(commands.Cog, name="公会战插件"):
         if not damage.isdigit() or int(damage) < 0:
             return False
         return True
+
+    def _get_current_clan_battle(self,
+                                 guild_id: int) -> Optional[Tuple[str, str]]:
+        """Gets the current clan battle.
+
+        Args:
+            guild_id: ID of a guild
+
+        Returns:
+            A tuple that contains the current clan battle's date and name. Or
+            None if no clan battle is found.
+        """
+        guild_id = str(guild_id)
+        try:
+            date = self.meta[guild_id]["current_battle_date"]
+            name = self.meta[guild_id]["current_battle_name"]
+            return date, name
+        except KeyError:
+            return None
 
     def _get_current_battle_mata(self, guild_id: int) -> Tuple[int, int, int]:
         """Gets the current round for a given guild.
