@@ -4,7 +4,7 @@ import logging
 import os
 import shelve
 import sqlite3
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import Tuple, Type, TypeVar
 
 import discord
@@ -109,6 +109,32 @@ class Run(IntEnum):
         if run == "lost":
             return cls.LOST
         return cls.UNKNOWN
+
+
+TierType = TypeVar('TierType', bound='Tier')
+
+
+class Tier(Enum):
+    """Enum that represents a tier."""
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    UNKNOWN = "UNKNOWN"
+
+    @classmethod
+    def get_tier(cls: Type[TierType], round_: int) -> TierType:
+        """Gets the corresponding tier for a given round."""
+        if round_ <= 0:
+            return cls.UNKNOWN
+
+        if round_ <= 3:
+            return cls.A
+        if round_ <= 10:
+            return cls.B
+        if round_ <= 34:
+            return cls.C
+        return cls.D
 
 
 class ClanBattles(commands.Cog, name="公会战插件"):
@@ -560,7 +586,7 @@ class ClanBattles(commands.Cog, name="公会战插件"):
         except KeyError:
             round_ = 1
             boss = 1
-            tier = self._get_tier(round_)
+            tier = Tier.get_tier(round_)
             hp = self.config["pcr_jp"]["boss_hp"][f"{tier}{round_}"]
             self.meta[guild_id] = {
                 "current_round": round_,
@@ -568,25 +594,6 @@ class ClanBattles(commands.Cog, name="公会战插件"):
                 "remaining_hp": hp
             }
             return round_, boss, hp
-
-    @staticmethod
-    def _get_tier(round_: int) -> str:
-        """Gets the tier for a given round.
-
-        Args:
-            round_: A round number.
-
-        Returns:
-            A tier label.
-        """
-
-        if round_ <= 3:
-            return "a"
-        if round_ <= 10:
-            return "b"
-        if round_ <= 34:
-            return "c"
-        return "d"
 
 
 def setup(bot):
